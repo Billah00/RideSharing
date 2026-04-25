@@ -1,25 +1,41 @@
-const Ride = require('../models/Ride');
+const prisma = require('../config/db');
 
 // GET /api/rides?from=&to=&date=
 exports.searchRides = async (req, res) => {
   const { from, to, date } = req.query;
   try {
-    let query = { status: 'active', seatsLeft: { $gt: 0 } };
+    let whereClause = { status: 'active', seatsLeft: { gt: 0 } };
 
-    if (from) query.fromCity = { $regex: new RegExp(from, 'i') };
-    if (to) query.toCity = { $regex: new RegExp(to, 'i') };
+    if (from) whereClause.fromCity = { contains: from, mode: 'insensitive' };
+    if (to) whereClause.toCity = { contains: to, mode: 'insensitive' };
     if (date) {
       const searchDate = new Date(date);
       const nextDate = new Date(searchDate);
       nextDate.setDate(nextDate.getDate() + 1);
-      query.date = { $gte: searchDate, $lt: nextDate };
+      whereClause.date = { gte: searchDate, lt: nextDate };
     }
 
-    const rides = await Ride.find(query)
-      .populate('driverId', 'name avatar avgRating totalReviews')
-      .sort({ pricePerSeat: 1, date: 1, time: 1 });
+    const rides = await prisma.ride.findMany({
+      where: whereClause,
+      include: {
+        driver: {
+          select: { name: true, avatar: true, avgRating: true, totalReviews: true }
+        }
+      },
+      orderBy: [
+        { pricePerSeat: 'asc' },
+        { date: 'asc' },
+        { time: 'asc' }
+      ]
+    });
 
-    res.json(rides);
+    const mappedRides = rides.map(ride => ({
+      ...ride,
+      _id: ride.id,
+      driverId: ride.driver
+    }));
+
+    res.json(mappedRides);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -30,19 +46,21 @@ exports.postRide = async (req, res) => {
   const { fromCity, toCity, date, time, totalSeats, pricePerSeat, notes } = req.body;
 
   try {
-    const ride = await Ride.create({
-      driverId: req.user._id,
-      fromCity,
-      toCity,
-      date,
-      time,
-      totalSeats,
-      seatsLeft: totalSeats,
-      pricePerSeat,
-      notes,
+    const ride = await prisma.ride.create({
+      data: {
+        driverId: req.user.id,
+        fromCity,
+        toCity,
+        date: new Date(date),
+        time,
+        totalSeats: parseInt(totalSeats),
+        seatsLeft: parseInt(totalSeats),
+        pricePerSeat: parseFloat(pricePerSeat),
+        notes,
+      }
     });
 
-    res.status(201).json(ride);
+    res.status(201).json({ ...ride, _id: ride.id });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -51,20 +69,24 @@ exports.postRide = async (req, res) => {
 // PATCH /api/rides/:id/cancel
 exports.cancelRide = async (req, res) => {
   try {
-    const ride = await Ride.findById(req.params.id);
+    const ride = await prisma.ride.findUnique({
+      where: { id: req.params.id }
+    });
 
     if (!ride) {
       return res.status(404).json({ message: 'Ride not found' });
     }
 
-    if (ride.driverId.toString() !== req.user._id.toString()) {
+    if (ride.driverId !== req.user.id) {
       return res.status(403).json({ message: 'User not authorized' });
     }
 
-    ride.status = 'cancelled';
-    await ride.save();
+    const updatedRide = await prisma.ride.update({
+      where: { id: req.params.id },
+      data: { status: 'cancelled' }
+    });
 
-    res.json(ride);
+    res.json({ ...updatedRide, _id: updatedRide.id });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -73,8 +95,13 @@ exports.cancelRide = async (req, res) => {
 // GET /api/rides/my
 exports.getMyRides = async (req, res) => {
   try {
-    const rides = await Ride.find({ driverId: req.user._id }).sort({ date: -1 });
-    res.json(rides);
+    const rides = await prisma.ride.findMany({
+      where: { driverId: req.user.id },
+      orderBy: { date: 'desc' }
+    });
+    
+    const mappedRides = rides.map(ride => ({ ...ride, _id: ride.id }));
+    res.json(mappedRides);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

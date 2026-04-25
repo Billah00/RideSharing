@@ -1,12 +1,14 @@
-const Booking = require('../models/Booking');
-const Ride = require('../models/Ride');
+const prisma = require('../config/db');
 
 // POST /api/bookings
 exports.createBooking = async (req, res) => {
   const { rideId } = req.body;
 
   try {
-    const ride = await Ride.findById(rideId);
+    const ride = await prisma.ride.findUnique({
+      where: { id: rideId }
+    });
+    
     if (!ride) {
       return res.status(404).json({ message: 'Ride not found' });
     }
@@ -16,25 +18,37 @@ exports.createBooking = async (req, res) => {
     }
 
     // Check if user already booked
-    const existingBooking = await Booking.findOne({ rideId, passengerId: req.user._id, status: { $ne: 'cancelled' } });
+    const existingBooking = await prisma.booking.findFirst({
+      where: { 
+        rideId, 
+        passengerId: req.user.id,
+        status: { not: 'cancelled' } 
+      }
+    });
+    
     if (existingBooking) {
       return res.status(400).json({ message: 'You have already booked this ride' });
     }
 
-    const booking = await Booking.create({
-      rideId,
-      passengerId: req.user._id,
-      status: 'confirmed' // Or pending based on rules, going with confirmed for prototype
-    });
+    // Transaction to ensure seatsLeft doesn't go below zero concurrently
+    const [booking, updatedRide] = await prisma.$transaction([
+      prisma.booking.create({
+        data: {
+          rideId,
+          passengerId: req.user.id,
+          status: 'confirmed'
+        }
+      }),
+      prisma.ride.update({
+        where: { id: rideId },
+        data: {
+          seatsLeft: ride.seatsLeft - 1,
+          status: ride.seatsLeft - 1 === 0 ? 'full' : ride.status
+        }
+      })
+    ]);
 
-    // Update ride seats
-    ride.seatsLeft -= 1;
-    if (ride.seatsLeft === 0) {
-      ride.status = 'full';
-    }
-    await ride.save();
-
-    res.status(201).json(booking);
+    res.status(201).json({ ...booking, _id: booking.id });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -43,13 +57,27 @@ exports.createBooking = async (req, res) => {
 // GET /api/bookings/my
 exports.getMyBookings = async (req, res) => {
   try {
-    const bookings = await Booking.find({ passengerId: req.user._id })
-      .populate({
-        path: 'rideId',
-        populate: { path: 'driverId', select: 'name avatar avgRating' }
-      })
-      .sort({ bookedAt: -1 });
-    res.json(bookings);
+    const bookings = await prisma.booking.findMany({
+      where: { passengerId: req.user.id },
+      include: {
+        ride: {
+          include: {
+            driver: {
+              select: { name: true, avatar: true, avgRating: true }
+            }
+          }
+        }
+      },
+      orderBy: { bookedAt: 'desc' }
+    });
+    
+    const mappedBookings = bookings.map(b => ({
+      ...b,
+      _id: b.id,
+      rideId: { ...b.ride, _id: b.ride.id, driverId: b.ride.driver }
+    }));
+    
+    res.json(mappedBookings);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -58,13 +86,16 @@ exports.getMyBookings = async (req, res) => {
 // PATCH /api/bookings/:id/cancel
 exports.cancelBooking = async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.id).populate('rideId');
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: { ride: true }
+    });
 
     if (!booking) {
       return res.status(404).json({ message: 'Booking not found' });
     }
 
-    if (booking.passengerId.toString() !== req.user._id.toString()) {
+    if (booking.passengerId !== req.user.id) {
       return res.status(403).json({ message: 'User not authorized' });
     }
 
@@ -72,20 +103,21 @@ exports.cancelBooking = async (req, res) => {
       return res.status(400).json({ message: 'Booking already cancelled' });
     }
 
-    booking.status = 'cancelled';
-    await booking.save();
+    const [updatedBooking, updatedRide] = await prisma.$transaction([
+      prisma.booking.update({
+        where: { id: req.params.id },
+        data: { status: 'cancelled' }
+      }),
+      prisma.ride.update({
+        where: { id: booking.rideId },
+        data: {
+          seatsLeft: booking.ride.seatsLeft + 1,
+          status: booking.ride.status === 'full' ? 'active' : booking.ride.status
+        }
+      })
+    ]);
 
-    // Increment ride seats
-    const ride = booking.rideId;
-    if (ride) {
-      ride.seatsLeft += 1;
-      if (ride.status === 'full') {
-        ride.status = 'active';
-      }
-      await ride.save();
-    }
-
-    res.json(booking);
+    res.json({ ...updatedBooking, _id: updatedBooking.id });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -2,12 +2,12 @@ const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const morgan = require('morgan');
-const connectDB = require('./config/db');
 
 // Load env vars
 dotenv.config();
 
 const app = express();
+const prisma = require('./config/db');
 
 // Middleware
 app.use(express.json());
@@ -25,7 +25,7 @@ app.use('/api/admin', require('./routes/adminRoutes'));
 
 // Basic route
 app.get('/', (req, res) => {
-  res.send('Carpooling API is running...');
+  res.send('Carpooling API is running with Prisma & Postgres...');
 });
 
 // Error handling middleware
@@ -40,16 +40,24 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-// If running on Vercel, just connect DB. Otherwise, listen on PORT.
-if (process.env.VERCEL) {
-  connectDB();
-} else {
-  connectDB().then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-    });
-  });
+// Test DB connection and start server
+async function startServer() {
+  try {
+    await prisma.$connect();
+    console.log('PostgreSQL database connected via Prisma');
+    
+    if (!process.env.VERCEL) {
+      app.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+      });
+    }
+  } catch (error) {
+    console.error(`Error connecting to Database: ${error.message}`);
+    process.exit(1);
+  }
 }
+
+startServer();
 
 // Export the Express API for Vercel Serverless Functions
 module.exports = app;

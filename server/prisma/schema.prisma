@@ -1,0 +1,91 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id           String    @id @default(uuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         Role
+  avatar       String?
+  avgRating    Float     @default(0)
+  totalReviews Int       @default(0)
+  suspended    Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  rides        Ride[]
+  bookings     Booking[]
+  reviewsGiven Review[]  @relation("Reviewer")
+  reviewsGot   Review[]  @relation("Reviewee")
+}
+
+enum Role {
+  driver
+  passenger
+  admin
+}
+
+model Ride {
+  id           String    @id @default(uuid())
+  driverId     String
+  driver       User      @relation(fields: [driverId], references: [id])
+  fromCity     String
+  toCity       String
+  date         DateTime
+  time         String
+  totalSeats   Int
+  seatsLeft    Int
+  pricePerSeat Float
+  notes        String?
+  status       RideStatus @default(active)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  bookings     Booking[]
+  reviews      Review[]
+}
+
+enum RideStatus {
+  active
+  full
+  completed
+  cancelled
+}
+
+model Booking {
+  id          String        @id @default(uuid())
+  rideId      String
+  ride        Ride          @relation(fields: [rideId], references: [id])
+  passengerId String
+  passenger   User          @relation(fields: [passengerId], references: [id])
+  status      BookingStatus @default(pending)
+  bookedAt    DateTime      @default(now())
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+enum BookingStatus {
+  pending
+  confirmed
+  cancelled
+}
+
+model Review {
+  id         String   @id @default(uuid())
+  rideId     String
+  ride       Ride     @relation(fields: [rideId], references: [id])
+  reviewerId String
+  reviewer   User     @relation("Reviewer", fields: [reviewerId], references: [id])
+  revieweeId String
+  reviewee   User     @relation("Reviewee", fields: [revieweeId], references: [id])
+  rating     Int
+  comment    String?  @db.VarChar(200)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
