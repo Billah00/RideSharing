@@ -19,6 +19,9 @@ const PassengerDashboard = () => {
     if (activeTab === 'bookings') {
       fetchBookings();
     }
+    if (activeTab === 'search') {
+      handleSearch();
+    }
   }, [activeTab]);
 
   const handleSearch = async (e) => {
